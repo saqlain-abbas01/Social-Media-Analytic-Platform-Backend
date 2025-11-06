@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { generateTokens } from "../utils/generateToken";
 import jwt from "jsonwebtoken";
 import { User } from "../models/userModel";
+import { log } from "console";
 
 const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET!;
 
@@ -23,6 +24,14 @@ export const register = async (req: Request, res: Response) => {
   user.refreshToken = refreshToken;
   await user.save();
 
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/api/auth/refresh",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
   res.status(201).json({
     user: {
       id: user._id,
@@ -31,7 +40,6 @@ export const register = async (req: Request, res: Response) => {
       role: user.role,
     },
     accessToken,
-    refreshToken,
   });
 };
 
@@ -51,6 +59,14 @@ export const login = async (req: Request, res: Response) => {
   user.refreshToken = refreshToken;
   await user.save();
 
+  res.cookie("refreshToken", refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/api/auth/refresh",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
   res.json({
     user: {
       id: user._id,
@@ -59,13 +75,15 @@ export const login = async (req: Request, res: Response) => {
       role: user.role,
     },
     accessToken,
-    refreshToken,
   });
 };
 
 // ✅ POST /api/auth/refresh
 export const refresh = async (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
+  console.log("refresh api is called");
+  const refreshToken = req.cookies?.refreshToken;
+  console.log("token", refreshToken);
+
   if (!refreshToken)
     return res.status(401).json({ message: "Refresh token required" });
 
@@ -83,20 +101,33 @@ export const refresh = async (req: Request, res: Response) => {
   user.refreshToken = newRefreshToken;
   await user.save();
 
-  res.json({ accessToken, refreshToken: newRefreshToken });
+  res.cookie("refreshToken", newRefreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "strict",
+    path: "/api/auth/refresh",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
+  res.json({ data: accessToken });
 };
 
 // ✅ POST /api/auth/logout
 export const logout = async (req: Request, res: Response) => {
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies.refreshToken;
   if (!refreshToken)
     return res.status(400).json({ message: "Refresh token required" });
 
   const user = await User.findOne({ refreshToken });
-  if (!user) return res.status(200).json({ message: "Logged out" });
+  if (!user) {
+    res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
+    return res.status(200).json({ message: "Logged out" });
+  }
 
   user.refreshToken = undefined;
   await user.save();
+
+  res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
 
   res.json({ message: "Logged out successfully" });
 };

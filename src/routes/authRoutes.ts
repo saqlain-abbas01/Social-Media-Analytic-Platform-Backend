@@ -13,6 +13,7 @@ import {
   registerSchema,
 } from "../validations/authValidations";
 import { asyncHandler } from "../utils/asyncErrorHandler";
+import { authenticate } from "../middlewares/authenticateMiddleware";
 
 const router = express.Router();
 
@@ -22,7 +23,7 @@ router.post(
   asyncHandler(register)
 );
 router.post("/login", validateRequest(loginSchema), login);
-router.post("/refresh", validateRequest(refreshSchema), refresh);
+router.post("/refresh", refresh);
 router.post("/logout", validateRequest(logoutSchema), logout);
 
 export default router;
