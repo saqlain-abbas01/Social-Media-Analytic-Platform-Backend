@@ -20,9 +20,9 @@ export const authenticate = (
     }
 
     const token = authHeader.split(" ")[1];
+
     const decoded = jwt.verify(token as string, ACCESS_TOKEN_SECRET);
 
-    // ✅ Type guard: ensure decoded is an object and contains our fields
     if (
       typeof decoded === "object" &&
       "userId" in decoded &&

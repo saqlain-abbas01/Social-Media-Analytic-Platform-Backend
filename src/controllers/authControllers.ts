@@ -82,7 +82,6 @@ export const login = async (req: Request, res: Response) => {
 export const refresh = async (req: Request, res: Response) => {
   console.log("refresh api is called");
   const refreshToken = req.cookies?.refreshToken;
-  console.log("token", refreshToken);
 
   if (!refreshToken)
     return res.status(401).json({ message: "Refresh token required" });
@@ -109,7 +108,7 @@ export const refresh = async (req: Request, res: Response) => {
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 
-  res.json({ data: accessToken });
+  res.json({ user, accessToken });
 };
 
 // ✅ POST /api/auth/logout

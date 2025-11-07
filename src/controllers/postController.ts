@@ -10,6 +10,7 @@ export const createPost = async (req: Request, res: Response) => {
   const { content, platform, scheduledAt, status } = req.body as IPost;
   const userId = req.user?.userId;
 
+  console.log("status", status);
   // --- Validation ---
   if (!content || content.length > 1000) {
     return res.status(400).json({
@@ -39,7 +40,7 @@ export const createPost = async (req: Request, res: Response) => {
     content,
     platform,
     scheduledAt,
-    status: status || "draft",
+    status,
     metadata: { hashtags, wordCount },
     publishedAt: status === "published" ? new Date() : undefined,
   });
@@ -92,15 +93,14 @@ export const updatePost = async (req: Request, res: Response) => {
       wordCount: updateData.content.split(/\s+/).length,
     };
   }
-
+  console.log("update data", updateData);
   if (updateData.platform) post.platform = updateData.platform;
-  if (updateData.scheduledAt)
-    post.scheduledAt = new Date(updateData.scheduledAt);
+  if (updateData.scheduledAt) post.scheduledAt = updateData.scheduledAt;
   if (updateData.status) post.status = updateData.status;
 
-  await post.save();
-
-  res.json({ message: "Post updated successfully", data: post });
+  const savedPost = await post.save();
+  console.log("saved post", savedPost);
+  res.json({ message: "Post updated successfully", data: savedPost });
 };
 
 export const getPosts = async (req: Request, res: Response) => {
@@ -115,8 +115,8 @@ export const getPosts = async (req: Request, res: Response) => {
     endDate,
   } = req.query;
   console.log("query", req.query);
-  const userId = req.user?.userId; // from auth middleware
-
+  const userId = req.user?.userId;
+  console.log("startDate", startDate, "endDate", endDate);
   const pageNum = Math.max(parseInt(page as string), 1);
   const limitNum = Math.min(Math.max(parseInt(limit as string), 1), 100);
 
@@ -144,7 +144,6 @@ export const getPosts = async (req: Request, res: Response) => {
 
   // ✅ Fetch posts (lean for performance + projection for light payload)
   const posts = await Post.find(filter)
-    .select("content platform status createdAt scheduledAt publishedAt") // projection
     .sort(sortOption)
     .skip((pageNum - 1) * limitNum)
     .limit(limitNum)

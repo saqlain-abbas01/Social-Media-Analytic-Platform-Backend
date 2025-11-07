@@ -13,10 +13,7 @@ export const createPostSchema = z.object({
       message: "Invalid platform",
     }),
 
-  scheduledAt: z
-    .string()
-    .datetime({ message: "scheduledAt must be a valid ISO date" })
-    .optional(),
+  scheduledAt: z.string().optional(),
 
   status: z
     .enum(["draft", "scheduled", "published", "failed"])
@@ -30,7 +27,7 @@ export const updatePostSchema = z.object({
     .max(1000, "Content must not exceed 1000 characters")
     .optional(),
   platform: z.enum(["twitter", "facebook", "instagram", "linkedin"]).optional(),
-  scheduledAt: z.string().datetime().optional(),
+  scheduledAt: z.string().optional(),
   status: z.enum(["draft", "scheduled", "published", "failed"]).optional(),
 });
 
