@@ -9,6 +9,10 @@ import { errorHandler } from "./middlewares/errorHandler";
 import mongoSanitize from "express-mongo-sanitize";
 import cookieParser from "cookie-parser";
 import authRoutes from "./routes/authRoutes";
+import postRoutes from "./routes/postRoutes";
+import analyticsRoutes from "./routes/analyticsRoutes";
+import { startPublishPostsJob } from "./jobs/publishPostJobs";
+import "./jobs/engagementSimulation";
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -37,7 +41,11 @@ app.use((req, res, next) => {
 
 connectDB();
 
+app.use("/api", postRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/analytics", analyticsRoutes);
+
+startPublishPostsJob();
 
 app.use(errorHandler);
 

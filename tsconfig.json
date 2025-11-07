@@ -45,5 +45,6 @@
     "isolatedModules": true,
     "noUncheckedSideEffectImports": true,
     "moduleDetection": "force"
-  }
+  },
+  "include": ["src/**/*.ts", "src/types/**/*.d.ts"]
 }

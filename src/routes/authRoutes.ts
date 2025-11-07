@@ -19,11 +19,11 @@ const router = express.Router();
 
 router.post(
   "/register",
-  validateRequest(registerSchema),
+  validateRequest({ body: registerSchema }),
   asyncHandler(register)
 );
-router.post("/login", validateRequest(loginSchema), login);
+router.post("/login", validateRequest({ body: loginSchema }), login);
 router.post("/refresh", refresh);
-router.post("/logout", validateRequest(logoutSchema), logout);
+router.post("/logout", validateRequest({ body: logoutSchema }), logout);
 
 export default router;
