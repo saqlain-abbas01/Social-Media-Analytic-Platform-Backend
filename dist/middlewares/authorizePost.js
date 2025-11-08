@@ -3,7 +3,6 @@
 // import { Response, NextFunction } from "express";
 // import Post from "../models/Post"; // example
 // import { AuthRequest } from "./authenticateMiddleware";
-Object.defineProperty(exports, "__esModule", { value: true });
 // export const authorizePostAccess = async (
 //   req: AuthRequest,
 //   res: Response,
