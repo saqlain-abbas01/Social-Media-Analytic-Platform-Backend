@@ -1,8 +1,9 @@
+"use strict";
 // // middlewares/authorizePostAccess.ts
 // import { Response, NextFunction } from "express";
 // import Post from "../models/Post"; // example
 // import { AuthRequest } from "./authenticateMiddleware";
-
+Object.defineProperty(exports, "__esModule", { value: true });
 // export const authorizePostAccess = async (
 //   req: AuthRequest,
 //   res: Response,
@@ -17,6 +18,6 @@
 //       .status(403)
 //       .json({ message: "Forbidden: You cannot access this post" });
 //   }
-
 //   next();
 // };
+//# sourceMappingURL=authorizePost.js.map

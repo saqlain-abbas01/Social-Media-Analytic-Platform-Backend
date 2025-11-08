@@ -1,0 +1,1 @@
+{"version":3,"file":"xssProtection.d.ts","sourceRoot":"","sources":["../../src/middlewares/xssProtection.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,QAAQ,EAAE,YAAY,EAAE,MAAM,SAAS,CAAC;AAE1D,eAAO,MAAM,aAAa,GACxB,KAAK,OAAO,EACZ,KAAK,QAAQ,EACb,MAAM,YAAY,SAgCnB,CAAC"}
