@@ -16,7 +16,7 @@
     // Environment Settings
     // See also https://aka.ms/tsconfig/module
     "typeRoots": ["./types", "./node_modules/@types"],
-    "types": [],
+    "types": ["node"],
     // For nodejs:
     // "lib": ["esnext"],
     // "types": ["node"],
