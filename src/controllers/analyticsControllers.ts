@@ -3,42 +3,40 @@ import mongoose from "mongoose";
 import Engagement from "../models/engagementModel";
 import AnalyticsCache from "../models/analyticsCache";
 import type { PipelineStage } from "mongoose";
-import { PlatformQuery } from "../types";
 import { Post } from "../models/postModel";
 
 export const getOptimalPostingTimes = async (req: Request, res: Response) => {
   const userId = new mongoose.Types.ObjectId(req.user?.userId);
   const cacheKey = `optimal_times_${userId}`;
 
-  // 🧠 1️⃣ Try MongoDB cache first (TTL handled by index)
-  const cached = await AnalyticsCache.findOne({ cacheKey });
-  if (cached && (cached.expiresAt as Date) > new Date()) {
-    console.log("✅ Serving from MongoDB cache");
-    return res.json({ cached: true, data: cached.data });
-  }
+  // 1️⃣ Try MongoDB cache first
+  // const cached = await AnalyticsCache.findOne({ cacheKey });
+  // if (cached && (cached.expiresAt as Date) > new Date()) {
+  //   return res.json({ cached: true, data: cached.data });
+  // }
 
-  // 📆 2️⃣ Analyze past 30 days of engagement
+  // 2️⃣ Analyze past 30 days
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
   const pipeline: PipelineStage[] = [
     { $match: { userId, timestamp: { $gte: thirtyDaysAgo } } },
 
-    // Project only required fields
+    // Project required fields, ensure 0 for missing values
     {
       $project: {
-        likes: 1,
-        comments: 1,
-        shares: 1,
-        clicks: 1,
-        impressions: 1,
+        likes: { $ifNull: ["$metrics.likes", 0] },
+        comments: { $ifNull: ["$metrics.comments", 0] },
+        shares: { $ifNull: ["$metrics.shares", 0] },
+        clicks: { $ifNull: ["$metrics.clicks", 0] },
+        impressions: { $ifNull: ["$metrics.impressions", 0] },
         timestamp: 1,
         dayOfWeek: { $dayOfWeek: "$timestamp" },
         hourOfDay: { $hour: "$timestamp" },
       },
     },
 
-    // Compute totalEngagement and rate metrics
+    // Compute totalEngagement and rates safely
     {
       $addFields: {
         totalEngagement: { $add: ["$likes", "$comments", "$shares"] },
@@ -93,23 +91,35 @@ export const getOptimalPostingTimes = async (req: Request, res: Response) => {
       },
     },
 
-    // Sort and limit top 5
+    // Sort by performance descending
     { $sort: { performanceScore: -1 } },
     { $limit: 5 },
+
+    // Project readable response
+    {
+      $project: {
+        _id: 0,
+        dayOfWeek: "$_id.dayOfWeek", // 1 = Sunday, 7 = Saturday
+        hourOfDay: "$_id.hourOfDay",
+        avgEngagement: { $round: ["$avgEngagement", 2] },
+        avgEngagementRate: { $round: ["$avgEngagementRate", 2] },
+        avgCTR: { $round: ["$avgCTR", 2] },
+        performanceScore: { $round: ["$performanceScore", 2] },
+        sampleSize: 1,
+      },
+    },
   ];
 
-  const results = await Engagement.aggregate(pipeline, {
-    allowDiskUse: true,
-  });
+  const results = await Engagement.aggregate(pipeline, { allowDiskUse: true });
 
-  // 💾 3️⃣ Cache the result for 1 hour
+  // Cache for 1 hour
   await AnalyticsCache.findOneAndUpdate(
     { cacheKey },
     {
       cacheKey,
       userId,
       data: results,
-      expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     },
     { upsert: true }
   );
@@ -131,66 +141,88 @@ export const getEngagementTrends = async (
     metric?: string;
   };
 
-  const userId = new mongoose.Types.ObjectId(req.user?.userId);
-  if (!userId) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+  // validate granularity
+  const allowedGran = ["hourly", "daily", "weekly"];
+  const gran = allowedGran.includes(granularity) ? granularity : "daily";
 
-  /** 🧠 Cache key (unique per user + filters) */
-  const cacheKey = `engagement_trends_${userId}_${period}_${granularity}_${metric}`;
+  // parse period (accept "30d" or "30")
+  const daysRaw = String(period).replace(/\s+/g, "").replace(/d$/i, "");
+  const days = Math.max(1, parseInt(daysRaw || "30", 10) || 30);
 
-  /** ⚡ Try to serve from MongoDB cache first */
-  const cached = await AnalyticsCache.findOne({ cacheKey });
-  if (cached && (cached.expiresAt as Date) > new Date()) {
-    console.log("✅ Served from MongoDB cache");
+  const userIdStr = req.user?.userId;
+  if (!userIdStr) return res.status(401).json({ message: "Unauthorized" });
+  const userId = new mongoose.Types.ObjectId(userIdStr);
+
+  // cache key
+  const cacheKey = `engagement_trends_${userId.toString()}_${days}d_${gran}_${metric}`;
+
+  // try cache
+  const cached = await AnalyticsCache.findOne({ cacheKey }).lean();
+  if (cached && cached.expiresAt && (cached.expiresAt as Date) > new Date()) {
     return res.status(200).json({ cached: true, ...cached.data });
   }
 
-  /** 🕒 Parse time range */
-  const days = parseInt(period.replace("d", ""), 10);
+  // start date
   const startDate = new Date();
-  startDate.setDate(startDate.getDate() - (isNaN(days) ? 30 : days));
+  startDate.setUTCDate(startDate.getUTCDate() - days);
 
-  /** 📆 Time granularity logic */
-  const dateTrunc: Record<string, Record<string, any>> = {
-    hourly: { $dateTrunc: { date: "$createdAt", unit: "hour" } },
-    daily: { $dateTrunc: { date: "$createdAt", unit: "day" } },
-    weekly: { $dateTrunc: { date: "$createdAt", unit: "week" } },
+  // dateTrunc definitions using timestamp
+  const dateTrunc: Record<string, any> = {
+    hourly: { $dateTrunc: { date: "$timestamp", unit: "hour" } },
+    daily: { $dateTrunc: { date: "$timestamp", unit: "day" } },
+    weekly: { $dateTrunc: { date: "$timestamp", unit: "week" } },
   };
 
-  /** 🧮 Optimized Aggregation Pipeline */
+  // Aggregation pipeline — note the $ifNull guards for metrics
   const pipeline: PipelineStage[] = [
-    // 1️⃣ Early $match for index usage
-    { $match: { userId, createdAt: { $gte: startDate } } },
+    { $match: { userId, timestamp: { $gte: startDate } } },
 
-    // 2️⃣ Project only needed fields
     {
       $project: {
-        createdAt: 1,
+        timestamp: 1,
+        // treat missing metrics as 0
         totalEngagement: {
-          $add: ["$likes", "$comments", "$shares", "$clicks", "$impressions"],
+          $add: [
+            { $ifNull: ["$metrics.likes", 0] },
+            { $ifNull: ["$metrics.comments", 0] },
+            { $ifNull: ["$metrics.shares", 0] },
+            { $ifNull: ["$metrics.clicks", 0] },
+            { $ifNull: ["$metrics.impressions", 0] },
+          ],
         },
       },
     },
 
-    // 3️⃣ Group by time bucket (hour/day/week)
+    // group by truncated timestamp
     {
       $group: {
-        _id: dateTrunc[granularity],
-        totalEngagement: { $sum: "$totalEngagement" },
-        avgEngagement: { $avg: "$totalEngagement" },
+        _id: dateTrunc[gran],
+        totalEngagement: { $sum: { $ifNull: ["$totalEngagement", 0] } },
+        avgEngagement: { $avg: { $ifNull: ["$totalEngagement", 0] } },
         count: { $sum: 1 },
       },
     },
 
-    // 4️⃣ Sort chronologically
+    // ensure chronological order
     { $sort: { _id: 1 } },
 
-    // 5️⃣ Facet for trend data and summary stats
+    // facet trend + summary
     {
       $facet: {
         trendData: [
-          { $project: { date: "$_id", value: "$totalEngagement", _id: 0 } },
+          {
+            $project: {
+              // convert _id (Date) to ISO string to ensure frontend receives stable value
+              date: {
+                $dateToString: {
+                  date: "$_id",
+                  format: "%Y-%m-%dT%H:%M:%S.%LZ",
+                },
+              },
+              value: { $ifNull: ["$totalEngagement", 0] },
+              _id: 0,
+            },
+          },
         ],
         summary: [
           {
@@ -205,16 +237,30 @@ export const getEngagementTrends = async (
     },
   ];
 
-  /** 🚀 Execute aggregation */
-  const results = await Engagement.aggregate(pipeline, { allowDiskUse: true });
+  const results = await Engagement.aggregate(pipeline)
+    .allowDiskUse(true)
+    .exec();
 
-  const trendData = results[0]?.trendData ?? [];
-  const summary = results[0]?.summary?.[0] ?? { total: 0, average: 0 };
+  const trendDataRaw = results?.[0]?.trendData ?? [];
+  const summaryRaw = results?.[0]?.summary?.[0] ?? { total: 0, average: 0 };
 
-  /** 🧾 Compute 7-day moving average */
+  // ensure numeric values and sort by date just in case
+  const trendData = trendDataRaw
+    .map((d: any) => ({
+      date: d.date,
+      value: Number(d.value || 0),
+    }))
+    .sort(
+      (a: any, b: any) =>
+        new Date(a.date).getTime() - new Date(b.date).getTime()
+    );
+
+  // 7-period moving average (use window size depending on granularity if needed)
+  const windowSize = gran === "hourly" ? 24 : 7;
   const dataWithMA = trendData.map((d: any, i: number, arr: any[]) => {
-    const slice = arr.slice(Math.max(0, i - 6), i + 1);
-    const movingAvg = slice.reduce((sum, x) => sum + x.value, 0) / slice.length;
+    const slice = arr.slice(Math.max(0, i - (windowSize - 1)), i + 1);
+    const movingAvg =
+      slice.reduce((s: number, x: any) => s + x.value, 0) / (slice.length || 1);
     return {
       date: d.date,
       value: d.value,
@@ -222,33 +268,37 @@ export const getEngagementTrends = async (
     };
   });
 
-  /** 📊 Compare current vs previous period */
-  const half = Math.floor(dataWithMA.length / 2);
+  // split current vs previous period halves safely
+  const half = Math.floor(dataWithMA.length / 2) || 0;
   const prev = dataWithMA.slice(0, half);
   const curr = dataWithMA.slice(half);
 
-  const prevTotal = prev.reduce((a: any, b: any) => a + b.value, 0);
-  const currTotal = curr.reduce((a: any, b: any) => a + b.value, 0);
-  const growth = ((currTotal - prevTotal) / (prevTotal || 1)) * 100;
+  const prevTotal = prev.reduce((a: number, b: any) => a + (b.value || 0), 0);
+  const currTotal = curr.reduce((a: number, b: any) => a + (b.value || 0), 0);
 
-  /** 🔝 Find peak date/value */
-  const peak =
-    dataWithMA.length > 0
-      ? dataWithMA.reduce((max: any, d: any) => (d.value > max.value ? d : max))
-      : { date: null, value: 0 };
+  // safer growth calculation
+  let growth: number;
+  if (prevTotal === 0 && currTotal === 0) growth = 0;
+  else if (prevTotal === 0 && currTotal > 0) growth = 100;
+  else growth = ((currTotal - prevTotal) / prevTotal) * 100;
+
+  // find peak
+  const peak = dataWithMA.length
+    ? dataWithMA.reduce((max: any, d: any) => (d.value > max.value ? d : max))
+    : { date: null, value: 0 };
 
   const response = {
     cached: false,
     data: dataWithMA,
     summary: {
-      total: Math.round(summary.total),
-      average: Number(summary.average.toFixed(2)),
+      total: Math.round(summaryRaw.total || 0),
+      average: Number((summaryRaw.average || 0).toFixed(2)),
       growth: Number(growth.toFixed(2)),
       peak,
     },
   };
 
-  /** 💾 Save to MongoDB cache (expires automatically via TTL index) */
+  // save cache (TTL handled by expiresAt index)
   await AnalyticsCache.findOneAndUpdate(
     { cacheKey },
     {
@@ -260,7 +310,6 @@ export const getEngagementTrends = async (
     { upsert: true }
   );
 
-  console.log("🧠 Cached engagement trends to MongoDB");
   return res.status(200).json(response);
 };
 
@@ -281,7 +330,6 @@ export const getPlatformPerformance = async (
   /** ⚡ Try MongoDB cache first */
   const cached = await AnalyticsCache.findOne({ cacheKey });
   if (cached && (cached.expiresAt as Date) > new Date()) {
-    console.log("✅ Served from MongoDB cache");
     return res.status(200).json({ cached: true, ...cached.data });
   }
 
@@ -292,27 +340,19 @@ export const getPlatformPerformance = async (
 
   /** 🧮 Aggregation Pipeline */
   const pipeline: PipelineStage[] = [
-    // 1️⃣ Early match (index-optimized)
-    {
-      $match: {
-        userId,
-        createdAt: { $gte: startDate },
-      },
-    },
+    { $match: { userId, timestamp: { $gte: startDate } } },
 
-    // 2️⃣ Project minimal fields
     {
       $project: {
         platform: 1,
-        likes: 1,
-        comments: 1,
-        shares: 1,
-        clicks: 1,
-        impressions: 1,
+        likes: { $ifNull: ["$metrics.likes", 0] },
+        comments: { $ifNull: ["$metrics.comments", 0] },
+        shares: { $ifNull: ["$metrics.shares", 0] },
+        clicks: { $ifNull: ["$metrics.clicks", 0] },
+        impressions: { $ifNull: ["$metrics.impressions", 0] },
       },
     },
 
-    // 3️⃣ Compute engagement metrics
     {
       $addFields: {
         totalEngagement: {
@@ -345,7 +385,6 @@ export const getPlatformPerformance = async (
       },
     },
 
-    // 4️⃣ Group by platform
     {
       $group: {
         _id: "$platform",
@@ -356,7 +395,6 @@ export const getPlatformPerformance = async (
       },
     },
 
-    // 5️⃣ Compute composite performance score
     {
       $addFields: {
         performanceScore: {
@@ -369,7 +407,6 @@ export const getPlatformPerformance = async (
       },
     },
 
-    // 6️⃣ Compute overall total for percentage comparison
     {
       $facet: {
         platformData: [
@@ -385,12 +422,7 @@ export const getPlatformPerformance = async (
           },
         ],
         totals: [
-          {
-            $group: {
-              _id: null,
-              grandTotal: { $sum: "$totalEngagement" },
-            },
-          },
+          { $group: { _id: null, grandTotal: { $sum: "$totalEngagement" } } },
         ],
       },
     },
@@ -442,19 +474,14 @@ export const getTopPosts = async (
   res: Response
 ): Promise<Response> => {
   const userId = new mongoose.Types.ObjectId(req.user?.userId);
-  if (!userId) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
 
   const limit = parseInt(req.query.limit as string, 10) || 10;
-
-  /** 🧠 Cache key for this user + limit */
   const cacheKey = `top_posts_${userId}_${limit}`;
 
-  /** ⚡ Check MongoDB cache first */
+  // 🔹 Optional: check cache first
   const cached = await AnalyticsCache.findOne({ cacheKey });
   if (cached && (cached.expiresAt as Date) > new Date()) {
-    console.log("✅ Served top posts from MongoDB cache");
     return res.status(200).json({ cached: true, ...cached.data });
   }
 
@@ -462,31 +489,71 @@ export const getTopPosts = async (
   const pipeline: PipelineStage[] = [
     { $match: { userId } },
 
+    // 1️⃣ Group all engagement per post to sum historical metrics
+    {
+      $group: {
+        _id: "$postId",
+        platform: { $first: "$platform" },
+        totalLikes: { $sum: "$metrics.likes" },
+        totalComments: { $sum: "$metrics.comments" },
+        totalShares: { $sum: "$metrics.shares" },
+        totalClicks: { $sum: "$metrics.clicks" },
+        totalImpressions: { $sum: { $ifNull: ["$metrics.impressions", 0] } },
+      },
+    },
+
+    // 2️⃣ Lookup post info
+    {
+      $lookup: {
+        from: "posts",
+        localField: "_id",
+        foreignField: "_id",
+        as: "post",
+      },
+    },
+    { $unwind: "$post" },
+
+    // 3️⃣ Project calculated fields
     {
       $project: {
-        postId: 1,
+        postId: "$_id",
+        title: "$post.content", // or "$post.title"
         platform: 1,
-        title: 1,
-        createdAt: 1,
-        likes: 1,
-        comments: 1,
-        shares: 1,
-        clicks: 1,
-        impressions: 1,
+        createdAt: "$post.createdAt",
         totalEngagement: {
-          $add: ["$likes", "$comments", "$shares", "$clicks"],
+          $add: [
+            "$totalLikes",
+            "$totalComments",
+            "$totalShares",
+            "$totalClicks",
+          ],
         },
+        totalImpressions: "$totalImpressions",
         engagementRate: {
           $cond: [
-            { $gt: ["$impressions", 0] },
+            { $gt: ["$totalImpressions", 0] },
             {
               $multiply: [
                 {
                   $divide: [
-                    { $add: ["$likes", "$comments", "$shares"] },
-                    "$impressions",
+                    {
+                      $add: ["$totalLikes", "$totalComments", "$totalShares"],
+                    },
+                    "$totalImpressions",
                   ],
                 },
+                100,
+              ],
+            },
+            0,
+          ],
+        },
+        clickThroughRate: {
+          $cond: [
+            { $gt: ["$totalImpressions", 0] },
+            {
+              $multiply: [
+                { $divide: ["$totalClicks", "$totalImpressions"] },
                 100,
               ],
             },
@@ -496,72 +563,70 @@ export const getTopPosts = async (
       },
     },
 
+    // 4️⃣ Sort by total engagement descending
     { $sort: { totalEngagement: -1 } },
+
+    // 5️⃣ Limit to top N posts
     { $limit: limit },
 
+    // 6️⃣ Compute grand total for percentage share
     {
-      $facet: {
-        topPosts: [
-          {
-            $project: {
-              postId: 1,
-              title: 1,
-              platform: 1,
-              createdAt: 1,
-              likes: 1,
-              comments: 1,
-              shares: 1,
-              clicks: 1,
-              impressions: 1,
-              totalEngagement: 1,
-              engagementRate: 1,
+      $group: {
+        _id: null,
+        topPosts: { $push: "$$ROOT" },
+        totalEngagementAll: { $sum: "$totalEngagement" },
+      },
+    },
+    { $unwind: "$topPosts" },
+    {
+      $project: {
+        _id: 0,
+        postId: "$topPosts.postId",
+        title: "$topPosts.title",
+        platform: "$topPosts.platform",
+        createdAt: "$topPosts.createdAt",
+        totalEngagement: "$topPosts.totalEngagement",
+        totalImpressions: "$topPosts.totalImpressions",
+        engagementRate: { $round: ["$topPosts.engagementRate", 2] },
+        clickThroughRate: { $round: ["$topPosts.clickThroughRate", 2] },
+        percentageShare: {
+          $cond: [
+            { $gt: ["$totalEngagementAll", 0] },
+            {
+              $round: [
+                {
+                  $multiply: [
+                    {
+                      $divide: [
+                        "$topPosts.totalEngagement",
+                        "$totalEngagementAll",
+                      ],
+                    },
+                    100,
+                  ],
+                },
+                2,
+              ],
             },
-          },
-        ],
-        totals: [
-          {
-            $group: {
-              _id: null,
-              totalEngagementAll: { $sum: "$totalEngagement" },
-            },
-          },
-        ],
+            0,
+          ],
+        },
       },
     },
   ];
 
-  const results = await Engagement.aggregate(pipeline, { allowDiskUse: true });
-
-  const topPostsRaw = results[0]?.topPosts ?? [];
-  const totalEngagementAll = results[0]?.totals?.[0]?.totalEngagementAll ?? 0;
-
-  /** 🧠 Compute percentage share */
-  const topPosts = topPostsRaw.map((p: any) => ({
-    postId: p.postId,
-    title: p.title,
-    platform: p.platform,
-    createdAt: p.createdAt,
-    likes: p.likes,
-    comments: p.comments,
-    shares: p.shares,
-    clicks: p.clicks,
-    impressions: p.impressions,
-    totalEngagement: p.totalEngagement,
-    engagementRate: Number(p.engagementRate.toFixed(2)),
-    percentageShare:
-      totalEngagementAll > 0
-        ? Number(((p.totalEngagement / totalEngagementAll) * 100).toFixed(2))
-        : 0,
-  }));
+  const results = await Engagement.aggregate(pipeline, {
+    allowDiskUse: true,
+  });
 
   const response = {
     cached: false,
-    totalPosts: topPosts.length,
-    totalEngagement: totalEngagementAll,
-    data: topPosts,
+    totalPosts: results.length,
+    totalEngagement: results.reduce((sum, r) => sum + r.totalEngagement, 0),
+    data: results,
   };
 
-  /** 💾 Cache result in MongoDB (15 min TTL) */
+  // 🔹 Cache in MongoDB (optional)
   await AnalyticsCache.findOneAndUpdate(
     { cacheKey },
     {
@@ -573,7 +638,6 @@ export const getTopPosts = async (
     { upsert: true }
   );
 
-  console.log("🧠 Cached top posts to MongoDB");
   return res.status(200).json(response);
 };
 
@@ -581,51 +645,84 @@ export const getPerformanceComparison = async (
   req: Request,
   res: Response
 ): Promise<Response> => {
-  const { startDate, endDate } = req.query;
   const userId = req.user?.userId;
 
-  if (!startDate || !endDate) {
-    return res.status(400).json({
-      success: false,
-      message: "startDate and endDate are required",
-    });
+  const now = new Date();
+
+  // ✅ Handle null or undefined startDate / endDate safely
+  let startDate = req.query.startDate
+    ? new Date(req.query.startDate as string)
+    : null;
+  let endDate = req.query.endDate
+    ? new Date(req.query.endDate as string)
+    : null;
+
+  // ✅ Fallback to last 30 days if missing or invalid
+  if (!endDate || isNaN(endDate.getTime())) endDate = new Date(now);
+  if (!startDate || isNaN(startDate.getTime())) {
+    startDate = new Date(endDate);
+    startDate.setDate(endDate.getDate() - 30);
   }
 
-  if (!userId) {
-    return res.status(401).json({ success: false, message: "Unauthorized" });
-  }
+  // ✅ Normalize to start/end of the day
+  startDate.setHours(0, 0, 0, 0);
+  endDate.setHours(23, 59, 59, 999);
 
-  const cacheKey = `performance_comparison_${userId}_${startDate}_${endDate}`;
-  const cached = await AnalyticsCache.findOne({ cacheKey });
-  if (cached && (cached.expiresAt as Date) > new Date()) {
-    console.log("✅ Served performance comparison from cache");
-    return res.status(200).json({ cached: true, ...cached.data });
-  }
+  const platform = req.query.platform as string | undefined;
 
-  const start = new Date(startDate as string);
-  const end = new Date(endDate as string);
+  // Cache key based on final computed dates and platform
+  const cacheKey = `performance_comparison_${userId}_${
+    platform || "all"
+  }_${startDate.toISOString()}_${endDate.toISOString()}`;
+  // const cached = await AnalyticsCache.findOne({ cacheKey });
+  // if (cached && (cached.expiresAt as Date) > new Date()) {
+  //   console.log("✅ Served performance comparison from cache");
+  //   return res.status(200).json({ cached: true, ...cached.data });
+  // }
 
-  // Previous period (same duration)
+  // ✅ Previous period (same duration)
   const diffDays = Math.ceil(
-    (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)
+    (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)
   );
-  const prevStart = new Date(start);
-  prevStart.setDate(start.getDate() - diffDays);
-  const prevEnd = new Date(start);
+  const prevEnd = new Date(startDate);
+  const prevStart = new Date(startDate);
+  prevStart.setDate(startDate.getDate() - diffDays);
 
-  // Helper to aggregate metrics for a user & period
+  // ✅ Helper: Aggregate metrics from Engagement collection
   const getMetrics = async (from: Date, to: Date) => {
-    const [metrics] = await Post.aggregate([
-      {
-        $match: { userId, createdAt: { $gte: from, $lte: to } },
-      },
+    const matchQuery: any = {
+      userId: new mongoose.Types.ObjectId(userId),
+      timestamp: { $gte: from, $lte: to },
+    };
+
+    // ✅ Apply platform filter if provided
+    if (platform && platform !== "all") {
+      matchQuery.platform = platform;
+    }
+
+    const [metrics] = await Engagement.aggregate([
+      { $match: matchQuery },
       {
         $group: {
           _id: null,
-          totalPosts: { $sum: 1 },
-          totalImpressions: { $sum: "$impressions" },
+          totalPosts: { $addToSet: "$postId" }, // unique posts
+          totalImpressions: { $sum: "$metrics.impressions" },
+          totalLikes: { $sum: "$metrics.likes" },
+          totalComments: { $sum: "$metrics.comments" },
+          totalShares: { $sum: "$metrics.shares" },
+          totalClicks: { $sum: "$metrics.clicks" },
+        },
+      },
+      {
+        $addFields: {
+          totalPosts: { $size: "$totalPosts" },
           totalEngagement: {
-            $sum: { $add: ["$likes", "$comments", "$shares", "$clicks"] },
+            $add: [
+              "$totalLikes",
+              "$totalComments",
+              "$totalShares",
+              "$totalClicks",
+            ],
           },
         },
       },
@@ -647,15 +744,20 @@ export const getPerformanceComparison = async (
       metrics || {
         totalPosts: 0,
         totalImpressions: 0,
+        totalLikes: 0,
+        totalComments: 0,
+        totalShares: 0,
+        totalClicks: 0,
         totalEngagement: 0,
         engagementRate: 0,
       }
     );
   };
 
-  const current = await getMetrics(start, end);
+  const current = await getMetrics(startDate, endDate);
   const previous = await getMetrics(prevStart, prevEnd);
 
+  // ✅ Percentage change calculator
   const calcChange = (curr: number, prev: number) =>
     prev === 0 ? (curr > 0 ? 100 : 0) : ((curr - prev) / prev) * 100;
 
@@ -663,38 +765,49 @@ export const getPerformanceComparison = async (
     totalPosts: {
       current: current.totalPosts,
       previous: previous.totalPosts,
-      change: Number(
-        calcChange(current.totalPosts, previous.totalPosts).toFixed(2)
-      ),
+      change: calcChange(current.totalPosts, previous.totalPosts),
     },
     totalImpressions: {
       current: current.totalImpressions,
       previous: previous.totalImpressions,
-      change: Number(
-        calcChange(current.totalImpressions, previous.totalImpressions).toFixed(
-          2
-        )
-      ),
+      change: calcChange(current.totalImpressions, previous.totalImpressions),
+    },
+    totalLikes: {
+      current: current.totalLikes,
+      previous: previous.totalLikes,
+      change: calcChange(current.totalLikes, previous.totalLikes),
+    },
+    totalComments: {
+      current: current.totalComments,
+      previous: previous.totalComments,
+      change: calcChange(current.totalComments, previous.totalComments),
+    },
+    totalShares: {
+      current: current.totalShares,
+      previous: previous.totalShares,
+      change: calcChange(current.totalShares, previous.totalShares),
     },
     totalEngagement: {
       current: current.totalEngagement,
       previous: previous.totalEngagement,
-      change: Number(
-        calcChange(current.totalEngagement, previous.totalEngagement).toFixed(2)
-      ),
+      change: calcChange(current.totalEngagement, previous.totalEngagement),
     },
     engagementRate: {
       current: Number(current.engagementRate.toFixed(4)),
       previous: Number(previous.engagementRate.toFixed(4)),
-      change: Number(
-        calcChange(current.engagementRate, previous.engagementRate).toFixed(2)
-      ),
+      change: calcChange(current.engagementRate, previous.engagementRate),
     },
   };
 
-  const response = { success: true, userId, data: comparison, cached: false };
+  const response = {
+    success: true,
+    userId,
+    platform: platform || "all",
+    data: comparison,
+    cached: false,
+  };
 
-  // 💾 Cache result in MongoDB (TTL: 30 min)
+  // 💾 Cache for 30 minutes
   await AnalyticsCache.findOneAndUpdate(
     { cacheKey },
     {
@@ -708,4 +821,180 @@ export const getPerformanceComparison = async (
 
   console.log("🧠 Cached performance comparison to MongoDB");
   return res.status(200).json(response);
+};
+
+export const getRecentOverview = async (
+  req: Request,
+  res: Response
+): Promise<Response> => {
+  const userIdStr = req.user?.userId;
+  if (!userIdStr) return res.status(401).json({ message: "Unauthorized" });
+  const userId = new mongoose.Types.ObjectId(userIdStr);
+
+  const cacheKey = `recent_overview_${userId}`;
+
+  // Try cache first
+  const cached = await AnalyticsCache.findOne({ cacheKey }).lean();
+  if (cached && cached.expiresAt && (cached.expiresAt as Date) > new Date()) {
+    return res.status(200).json({ cached: true, ...cached.data });
+  }
+
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now);
+  thirtyDaysAgo.setDate(now.getDate() - 30);
+
+  const sixtyDaysAgo = new Date(now);
+  sixtyDaysAgo.setDate(now.getDate() - 60);
+
+  // 🧮 Aggregation for current 30 days and previous 30 days
+  const pipeline = [
+    {
+      $match: { userId, timestamp: { $gte: sixtyDaysAgo } },
+    },
+    {
+      $project: {
+        likes: { $ifNull: ["$metrics.likes", 0] },
+        comments: { $ifNull: ["$metrics.comments", 0] },
+        shares: { $ifNull: ["$metrics.shares", 0] },
+        clicks: { $ifNull: ["$metrics.clicks", 0] },
+        impressions: { $ifNull: ["$metrics.impressions", 0] },
+        period: {
+          $cond: [
+            { $gte: ["$timestamp", thirtyDaysAgo] },
+            "current",
+            "previous",
+          ],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: "$period",
+        totalLikes: { $sum: "$likes" },
+        totalComments: { $sum: "$comments" },
+        totalShares: { $sum: "$shares" },
+        totalClicks: { $sum: "$clicks" },
+        totalImpressions: { $sum: "$impressions" },
+      },
+    },
+  ];
+
+  const results = await Engagement.aggregate(pipeline).exec();
+
+  const current = results.find((r: any) => r._id === "current") || {
+    totalLikes: 0,
+    totalComments: 0,
+    totalShares: 0,
+    totalClicks: 0,
+    totalImpressions: 0,
+  };
+
+  const previous = results.find((r: any) => r._id === "previous") || {
+    totalLikes: 0,
+    totalComments: 0,
+    totalShares: 0,
+    totalClicks: 0,
+    totalImpressions: 0,
+  };
+
+  // Count posts
+  const currentPosts = await Post.countDocuments({
+    userId,
+    createdAt: { $gte: thirtyDaysAgo },
+  });
+  const previousPosts = await Post.countDocuments({
+    userId,
+    createdAt: { $gte: sixtyDaysAgo, $lt: thirtyDaysAgo },
+  });
+
+  // Helper function to calculate change %
+  const calcChange = (currentVal: number, previousVal: number) => {
+    if (previousVal === 0 && currentVal === 0) return 0;
+    if (previousVal === 0 && currentVal > 0) return 100;
+    return ((currentVal - previousVal) / previousVal) * 100;
+  };
+
+  const responseData = {
+    cached: false,
+    totalPosts: {
+      current: currentPosts,
+      previous: previousPosts,
+      change: Number(calcChange(currentPosts, previousPosts).toFixed(2)),
+    },
+    totalEngagement: {
+      current:
+        current.totalLikes +
+        current.totalComments +
+        current.totalShares +
+        current.totalClicks,
+      previous:
+        previous.totalLikes +
+        previous.totalComments +
+        previous.totalShares +
+        previous.totalClicks,
+      change: Number(
+        calcChange(
+          current.totalLikes +
+            current.totalComments +
+            current.totalShares +
+            current.totalClicks,
+          previous.totalLikes +
+            previous.totalComments +
+            previous.totalShares +
+            previous.totalClicks
+        ).toFixed(2)
+      ),
+    },
+    totalLikes: {
+      current: current.totalLikes,
+      previous: previous.totalLikes,
+      change: Number(
+        calcChange(current.totalLikes, previous.totalLikes).toFixed(2)
+      ),
+    },
+    totalComments: {
+      current: current.totalComments,
+      previous: previous.totalComments,
+      change: Number(
+        calcChange(current.totalComments, previous.totalComments).toFixed(2)
+      ),
+    },
+    totalShares: {
+      current: current.totalShares,
+      previous: previous.totalShares,
+      change: Number(
+        calcChange(current.totalShares, previous.totalShares).toFixed(2)
+      ),
+    },
+    totalClicks: {
+      current: current.totalClicks,
+      previous: previous.totalClicks,
+      change: Number(
+        calcChange(current.totalClicks, previous.totalClicks).toFixed(2)
+      ),
+    },
+    totalImpressions: {
+      current: current.totalImpressions,
+      previous: previous.totalImpressions,
+      change: Number(
+        calcChange(current.totalImpressions, previous.totalImpressions).toFixed(
+          2
+        )
+      ),
+    },
+  };
+
+  // Cache for 15 minutes
+  await AnalyticsCache.findOneAndUpdate(
+    { cacheKey },
+    {
+      cacheKey,
+      userId,
+      data: responseData,
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+    },
+    { upsert: true }
+  );
+
+  return res.status(200).json(responseData);
 };

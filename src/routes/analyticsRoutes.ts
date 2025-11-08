@@ -6,11 +6,13 @@ import {
   getOptimalPostingTimes,
   getPerformanceComparison,
   getPlatformPerformance,
+  getRecentOverview,
   getTopPosts,
 } from "../controllers/analyticsControllers";
 
 const router = express.Router();
 
+router.get("/overview", authenticate, asyncHandler(getRecentOverview));
 router.get(
   "/optimal-times",
   authenticate,

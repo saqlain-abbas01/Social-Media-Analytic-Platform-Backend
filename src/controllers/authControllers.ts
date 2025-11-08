@@ -82,7 +82,7 @@ export const login = async (req: Request, res: Response) => {
 export const refresh = async (req: Request, res: Response) => {
   console.log("refresh api is called");
   const refreshToken = req.cookies?.refreshToken;
-
+  console.log("refreshToken", refreshToken);
   if (!refreshToken)
     return res.status(401).json({ message: "Refresh token required" });
 
@@ -113,11 +113,8 @@ export const refresh = async (req: Request, res: Response) => {
 
 // ✅ POST /api/auth/logout
 export const logout = async (req: Request, res: Response) => {
-  const refreshToken = req.cookies.refreshToken;
-  if (!refreshToken)
-    return res.status(400).json({ message: "Refresh token required" });
-
-  const user = await User.findOne({ refreshToken });
+  const userId = req.user?.userId;
+  const user = await User.findOne({ id: userId });
   if (!user) {
     res.clearCookie("refreshToken", { path: "/api/auth/refresh" });
     return res.status(200).json({ message: "Logged out" });

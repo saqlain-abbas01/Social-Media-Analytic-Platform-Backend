@@ -267,6 +267,7 @@ export const getPostAnalytics = async (req: Request, res: Response) => {
     }
 
     // Aggregate metrics
+    // Aggregate metrics
     const totals = engagements.reduce(
       (acc, e) => {
         acc.likes += e.metrics?.likes || 0;
@@ -279,7 +280,8 @@ export const getPostAnalytics = async (req: Request, res: Response) => {
       { likes: 0, comments: 0, shares: 0, clicks: 0, impressions: 0 }
     );
 
-    const totalEngagement = totals.likes + totals.comments + totals.shares;
+    const totalEngagement =
+      totals.likes + totals.comments + totals.shares + totals.clicks; // include clicks
 
     const engagementRate =
       totals.impressions > 0 ? (totalEngagement / totals.impressions) * 100 : 0;
@@ -306,12 +308,16 @@ export const getPostAnalytics = async (req: Request, res: Response) => {
 
     // 4️⃣ Cache analytics in MongoDB for 15 minutes (TTL)
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins
-    await AnalyticsCache.create({
-      cacheKey,
-      userId,
-      data: analyticsData,
-      expiresAt,
-    });
+    await AnalyticsCache.findOneAndUpdate(
+      { cacheKey }, // find by cacheKey
+      {
+        cacheKey,
+        userId,
+        data: analyticsData,
+        expiresAt,
+      },
+      { upsert: true } // create if not exists
+    );
 
     res.status(200).json({
       source: "live",
