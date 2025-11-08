@@ -19,10 +19,13 @@ const publishPostJobs_1 = require("./jobs/publishPostJobs");
 require("./jobs/engagementSimulation");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 5000;
+const allowedOrigin = process.env.NODE_ENV === "production"
+    ? process.env.PROD_FRONTEND_URL
+    : process.env.DEV_FRONTEND_URL;
 app.use(express_1.default.json());
 app.use((0, cookie_parser_1.default)());
 app.use((0, cors_1.default)({
-    origin: "http://localhost:5173",
+    origin: allowedOrigin,
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
 }));

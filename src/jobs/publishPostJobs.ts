@@ -11,7 +11,7 @@ export const startPublishPostsJob = () => {
 
       // Find due scheduled posts
       const posts = await Post.find({
-        status: "draft",
+        status: "scheduled",
         scheduledAt: { $lte: now },
       }).lean();
       console.log("posts", posts);

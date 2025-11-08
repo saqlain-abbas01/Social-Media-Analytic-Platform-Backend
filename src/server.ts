@@ -17,11 +17,16 @@ import "./jobs/engagementSimulation";
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+const allowedOrigin =
+  process.env.NODE_ENV === "production"
+    ? process.env.PROD_FRONTEND_URL
+    : process.env.DEV_FRONTEND_URL;
+
 app.use(express.json());
 app.use(cookieParser());
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: allowedOrigin,
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })

@@ -14,7 +14,7 @@ const startPublishPostsJob = () => {
             const now = new Date();
             // Find due scheduled posts
             const posts = await postModel_1.Post.find({
-                status: "draft",
+                status: "scheduled",
                 scheduledAt: { $lte: now },
             }).lean();
             console.log("posts", posts);
