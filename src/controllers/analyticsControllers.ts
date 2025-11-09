@@ -10,10 +10,10 @@ export const getOptimalPostingTimes = async (req: Request, res: Response) => {
   const cacheKey = `optimal_times_${userId}`;
 
   // 1️⃣ Try MongoDB cache first
-  // const cached = await AnalyticsCache.findOne({ cacheKey });
-  // if (cached && (cached.expiresAt as Date) > new Date()) {
-  //   return res.json({ cached: true, data: cached.data });
-  // }
+  const cached = await AnalyticsCache.findOne({ cacheKey });
+  if (cached && (cached.expiresAt as Date) > new Date()) {
+    return res.json({ cached: true, data: cached.data });
+  }
 
   // 2️⃣ Analyze past 30 days
   const thirtyDaysAgo = new Date();
@@ -674,11 +674,11 @@ export const getPerformanceComparison = async (
   const cacheKey = `performance_comparison_${userId}_${
     platform || "all"
   }_${startDate.toISOString()}_${endDate.toISOString()}`;
-  // const cached = await AnalyticsCache.findOne({ cacheKey });
-  // if (cached && (cached.expiresAt as Date) > new Date()) {
-  //   console.log("✅ Served performance comparison from cache");
-  //   return res.status(200).json({ cached: true, ...cached.data });
-  // }
+  const cached = await AnalyticsCache.findOne({ cacheKey });
+  if (cached && (cached.expiresAt as Date) > new Date()) {
+    console.log("✅ Served performance comparison from cache");
+    return res.status(200).json({ cached: true, ...cached.data });
+  }
 
   // ✅ Previous period (same duration)
   const diffDays = Math.ceil(
